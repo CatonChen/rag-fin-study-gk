@@ -33,9 +33,9 @@ class ZhipuConfig:
     def __post_init__(self):
         """初始化后处理"""
         if self.api_key is None:
-            self.api_key = os.getenv("ZHIPU_API_KEY")
+            self.api_key = os.getenv("ZHIPUAI_API_KEY")
             if not self.api_key:
-                raise ValueError("ZHIPU_API_KEY not found in environment variables")
+                raise ValueError("ZHIPUAI_API_KEY not found in environment variables")
 
 @dataclass
 class ZhipuEmbeddingConfig(ZhipuConfig):

@@ -15,7 +15,7 @@ class DBConfig:
     @property
     def index_path(self) -> str:
         """获取FAISS索引文件路径"""
-        return f"{self.db_path}.index"
+        return "db/financial_terms_zhipu.index"
     
     @property
     def is_valid(self) -> bool:

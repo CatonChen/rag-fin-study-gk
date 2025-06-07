@@ -343,12 +343,7 @@ class FinancialAbbrService:
         Raises:
             ModelError: 当扩展处理失败时
         """
-        prompt = f"""请根据上下文对以下文本中的金融缩写进行扩展。
-        请以JSON格式返回结果，包含原始缩写、扩展形式、类型和上下文相关性。
-        
-        文本：{text}
-        上下文：{context}
-        """
+        prompt = f"""请根据上下文对以下金融缩写进行语义展开。\n请以JSON格式返回结果，包含缩写、全称、定义、上下文。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n\n文本：{text}\n"""
         
         try:
             logger.debug("调用模型进行上下文感知扩展")

@@ -165,42 +165,52 @@ class FinancialNERService:
             raise ModelError(f"规则识别失败: {str(e)}")
     
     async def _llm_based_recognition(self, text: str) -> List[Dict[str, Any]]:
-        """基于LLM的实体识别
-        
-        Args:
-            text: 输入文本
-            
-        Returns:
-            List[Dict[str, Any]]: 识别到的实体列表
-            
-        Raises:
-            ModelError: 当LLM识别失败时
-        """
-        prompt = f"""请识别以下文本中的金融实体，包括公司、股票、基金、债券、货币、指数、行业和金融术语。
-        请以JSON格式返回结果，包含实体文本、类型、位置和置信度。
-        
-        文本：{text}
-        
-        实体类型：
-        {self.entity_types}
-        """
-        
+        """基于LLM的实体识别"""
+        prompt = f"""请识别以下文本中的金融实体，包括公司、股票、基金、债券、货币、指数、行业和金融术语。\n请以JSON格式返回结果，包含实体文本、类型、位置和置信度。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n\n文本：{text}\n\n实体类型：\n{self.entity_types}\n"""
         try:
             logger.debug("调用模型进行实体提取")
-            response = await self.client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.llm_config.model_name,
                 messages=[
                     {"role": "system", "content": "你是一个金融实体识别专家。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
             import json
-            result = json.loads(response.choices[0].message.content)
-            return result.get("entities", [])
+            content = response.choices[0].message.content.strip()
+            # 更健壮地去除所有Markdown代码块标记
+            content = re.sub(r"^```[a-zA-Z]*\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
+            content = content.strip()
+            try:
+                result = json.loads(content)
+            except Exception as e:
+                logger.error(f"原始LLM返回内容: {content}")
+                raise e
+            # 兼容返回为list或dict
+            if isinstance(result, dict):
+                for key in ["entities", "relations", "relationships"]:
+                    if key in result:
+                        entities = result[key]
+                        return self._normalize_llm_entities(entities)
+                return self._normalize_llm_entities([result])
+            return self._normalize_llm_entities(result)
         except Exception as e:
             logger.error(f"模型调用失败: {str(e)}")
             raise ModelError(f"实体提取处理失败: {str(e)}")
+    
+    def _normalize_llm_entities(self, entities):
+        normalized = []
+        for entity in entities:
+            new_entity = dict(entity)
+            if 'text' in new_entity:
+                new_entity['word'] = new_entity.pop('text')
+            if 'type' in new_entity:
+                new_entity['entity_group'] = new_entity.pop('type')
+            if 'position' in new_entity and isinstance(new_entity['position'], list) and len(new_entity['position']) == 2:
+                new_entity['start'], new_entity['end'] = new_entity['position']
+            normalized.append(new_entity)
+        return normalized
     
     def _merge_entities(
         self,
@@ -225,15 +235,20 @@ class FinancialNERService:
             
             # 添加规则识别的实体
             for entity in rule_entities:
-                key = f"{entity['word']}_{entity['start']}_{entity['end']}"
+                key = f"{entity['word']}_{entity.get('start', -1)}_{entity.get('end', -1)}"
                 if key not in seen:
                     merged.append(entity)
                     seen.add(key)
             
-            # 添加LLM识别的实体
+            # 添加LLM识别的实体，兼容无start/end
             for entity in llm_entities:
-                key = f"{entity['word']}_{entity['start']}_{entity['end']}"
+                key = f"{entity['word']}_{entity.get('start', -1)}_{entity.get('end', -1)}"
                 if key not in seen:
+                    # 若无start/end，补充默认值
+                    if 'start' not in entity:
+                        entity['start'] = -1
+                    if 'end' not in entity:
+                        entity['end'] = -1
                     merged.append(entity)
                     seen.add(key)
             
@@ -246,28 +261,17 @@ class FinancialNERService:
         entities: List[Dict[str, Any]],
         term_types: Dict[str, bool]
     ) -> List[Dict[str, Any]]:
-        """过滤实体
-        
-        Args:
-            entities: 实体列表
-            term_types: 术语类型配置
-            
-        Returns:
-            List[Dict[str, Any]]: 过滤后的实体列表
-            
-        Raises:
-            ModelError: 当实体过滤失败时
-        """
+        """过滤实体，保留term_types中为True的类型"""
         try:
             logger.debug(f"开始过滤实体，原始数量: {len(entities)}")
-            if not term_types.get("allFinancialTerms", False):
-                return entities
-                
             filtered = [
                 entity for entity in entities
-                if entity["entity_group"] in term_types
+                if term_types.get(entity.get("entity_group"), False)
             ]
+            logger.debug(f"实体过滤完成，过滤后数量: {len(filtered)}")
+            return filtered
         except Exception as e:
+            logger.error(f"实体过滤失败: {str(e)}")
             raise ModelError(f"实体过滤失败: {str(e)}")
     
     async def extract_relationships(
@@ -275,39 +279,36 @@ class FinancialNERService:
         text: str,
         entities: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """提取实体关系
-        
-        Args:
-            text: 输入文本
-            entities: 实体列表
-            
-        Returns:
-            List[Dict[str, Any]]: 实体关系列表
-            
-        Raises:
-            ModelError: 当关系提取失败时
-        """
+        """提取实体关系"""
         try:
             if not entities:
                 return []
-                
-            prompt = f"""请分析以下文本中实体之间的关系。
-            文本：{text}
-            实体：{entities}
-            请以JSON格式返回结果，包含关系类型和置信度。
-            """
-            
-            response = await self.client.chat.completions.create(
+            prompt = f"""请分析以下文本中实体之间的关系。\n请以JSON格式返回结果，包含关系类型和置信度。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n文本：{text}\n实体：{entities}\n"""
+            response = self.client.chat.completions.create(
                 model=self.llm_config.model_name,
                 messages=[
                     {"role": "system", "content": "你是一个金融关系分析专家。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
             import json
-            result = json.loads(response.choices[0].message.content)
-            return result.get("relationships", [])
+            content = response.choices[0].message.content.strip()
+            # 更健壮地去除所有Markdown代码块标记
+            content = re.sub(r"^```[a-zA-Z]*\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
+            content = content.strip()
+            try:
+                result = json.loads(content)
+            except Exception as e:
+                logger.error(f"原始LLM返回内容: {content}")
+                raise e
+            # 兼容返回为dict或list
+            if isinstance(result, dict):
+                for key in ["relationships", "relations"]:
+                    if key in result:
+                        return result[key]
+                return result
+            return result
         except Exception as e:
             raise ModelError(f"关系提取失败: {str(e)}")
 

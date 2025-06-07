@@ -82,13 +82,13 @@ class FinancialStdService:
             with self.db_manager.get_connection() as conn:
                 cursor = conn.cursor()
                 
-                # 加载术语向量
-                cursor.execute("SELECT term, vector FROM term_vectors")
-                self.term_vectors = {row[0]: np.frombuffer(row[1], dtype=np.float32) for row in cursor.fetchall()}
+                # 加载术语向量（embedding_id 仅作示例，实际向量需结合faiss索引）
+                cursor.execute("SELECT term_name, embedding_id FROM financial_terms")
+                self.term_vectors = {row[0]: row[1] for row in cursor.fetchall()}
                 
                 # 加载术语元数据
-                cursor.execute("SELECT term, type, definition FROM term_metadata")
-                self.term_metadata = {row[0]: {"type": row[1], "definition": row[2]} for row in cursor.fetchall()}
+                cursor.execute("SELECT term_name, category FROM financial_terms")
+                self.term_metadata = {row[0]: {"type": row[1], "definition": ""} for row in cursor.fetchall()}
                 
             logger.info(f"术语向量和元数据加载完成，共 {len(self.term_vectors)} 个术语")
         except Exception as e:
@@ -150,11 +150,7 @@ class FinancialStdService:
         Raises:
             ModelError: 当标准化处理失败时
         """
-        prompt = f"""请对以下文本中的金融术语进行标准化处理。
-        请以JSON格式返回结果，包含原始术语、标准化术语、术语类型和置信度。
-        
-        文本：{text}
-        """
+        prompt = f"""请对以下文本中的金融术语进行标准化处理。\n请以JSON格式返回结果，包含原始术语、标准化术语、术语类型和置信度。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n\n文本：{text}\n"""
         
         try:
             logger.debug("调用模型进行术语标准化")
@@ -231,11 +227,7 @@ class FinancialStdService:
                 raise ValidationError("输入术语不能为空")
                 
             # 获取输入术语的向量表示
-            prompt = f"""请将以下金融术语转换为向量表示。
-            请以JSON格式返回结果，包含向量表示。
-            
-            术语：{term}
-            """
+            prompt = f"""请将以下金融术语转换为向量表示。\n请以JSON格式返回结果，包含向量表示。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n\n术语：{term}\n"""
             
             response = await self.client.chat.completions.create(
                 model=self.llm_config.model_name,

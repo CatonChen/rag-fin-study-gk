@@ -79,22 +79,7 @@ class FinancialCorrService:
         """
         try:
             # 构建提示词
-            prompt = f"""请纠正以下金融文本中的错误，包括：
-1. 金融术语拼写错误
-2. 数字和单位错误
-3. 标点符号错误
-4. 格式错误
-
-文本：{text}
-
-请以JSON格式返回结果，包含：
-- corrected_text: 纠正后的文本
-- corrections: 纠正列表，每个纠正包含：
-  - original: 原文
-  - corrected: 纠正后
-  - type: 错误类型
-  - confidence: 置信度
-"""
+            prompt = f"""请对以下金融文本进行拼写纠错。\n请以JSON格式返回结果，包含原文、纠正后文本、纠错详情。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n\n文本：{text}\n"""
             
             # 调用LLM获取纠错结果
             response = self.client.chat.completions.create(
@@ -326,19 +311,14 @@ class FinancialCorrService:
         Raises:
             ModelError: 当分析处理失败时
         """
-        prompt = f"""请根据上下文分析以下文本中金融术语之间的关联关系。
-        请以JSON格式返回结果，包含术语对、关联类型、关联强度和上下文相关性。
-        
-        文本：{text}
-        上下文：{context}
-        """
+        prompt = f"""请对以下金融文本进行上下文感知纠错。\n请以JSON格式返回结果，包含原文、纠正后文本、纠错详情、上下文。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n\n文本：{text}\n"""
         
         try:
             logger.debug("调用模型进行上下文感知关联分析")
             response = await self.client.chat.completions.create(
                 model=self.llm_config.model_name,
                 messages=[
-                    {"role": "system", "content": "你是一个金融术语关联分析专家。"},
+                    {"role": "system", "content": "你是一个金融文本纠错专家。"},
                     {"role": "user", "content": prompt}
                 ]
             )
@@ -346,8 +326,9 @@ class FinancialCorrService:
             import json
             result = json.loads(response.choices[0].message.content)
             return {
-                "correlations": result.get("correlations", []),
-                "method": "context_aware_correlation",
+                "corrected_text": result.get("corrected_text", text),
+                "corrections": result.get("corrections", []),
+                "confidence": result.get("confidence", 0.0),
                 "context_relevance": result.get("context_relevance", {})
             }
         except Exception as e:

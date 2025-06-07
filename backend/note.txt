@@ -1,0 +1,6 @@
+创建环境: python3 -m venv /mnt/external_disk/venv/NLP_Tools
+激活环境：source /mnt/external_disk/venv/NLP_Tools/bin/activate
+安装包：pip install -r requirements.txt
+
+启动后端：
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload

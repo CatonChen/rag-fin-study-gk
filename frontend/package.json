@@ -1,0 +1,80 @@
+{
+  "name": "rag-fin-study-gk",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@chakra-ui/react": "^2.8.2",
+    "@emotion/react": "^11.11.3",
+    "@emotion/styled": "^11.11.0",
+    "@testing-library/jest-dom": "^5.17.0",
+    "@testing-library/react": "^13.4.0",
+    "@testing-library/user-event": "^13.5.0",
+    "axios": "^1.6.7",
+    "framer-motion": "^11.0.8",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-icons": "^5.0.1",
+    "react-router-dom": "^6.22.2",
+    "react-scripts": "5.0.1",
+    "web-vitals": "^2.1.4"
+  },
+  "devDependencies": {
+    "@babel/plugin-transform-class-properties": "^7.24.1",
+    "@babel/plugin-transform-nullish-coalescing-operator": "^7.24.1",
+    "@babel/plugin-transform-numeric-separator": "^7.24.1",
+    "@babel/plugin-transform-optional-chaining": "^7.24.1",
+    "@babel/plugin-transform-private-methods": "^7.24.1",
+    "@babel/plugin-transform-private-property-in-object": "^7.24.1",
+    "eslint": "^8.57.0",
+    "eslint-config-react-app": "^7.0.1",
+    "glob": "^10.3.10",
+    "svgo": "^3.2.0"
+  },
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject"
+  },
+  "eslintConfig": {
+    "extends": [
+      "react-app",
+      "react-app/jest"
+    ]
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
+  },
+  "resolutions": {
+    "@babel/core": "^7.24.0",
+    "svgo": "^3.2.0",
+    "eslint": "^8.57.0",
+    "glob": "^10.3.10",
+    "q": "^2.0.3",
+    "rimraf": "^5.0.5",
+    "inflight": "^2.0.1",
+    "workbox-cacheable-response": "^7.0.0",
+    "workbox-google-analytics": "^7.0.0",
+    "sourcemap-codec": "^1.4.8",
+    "stable": "^0.1.8",
+    "domexception": "^4.0.0",
+    "w3c-hr-time": "^2.0.0"
+  },
+  "overrides": {
+    "react-scripts": {
+      "@svgr/webpack": "^8.1.0",
+      "postcss": "^8.4.35",
+      "resolve-url-loader": "^5.0.0",
+      "webpack": "^5.91.0"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+技术栈：
+- React 18.3.1 作为主要框架
+- React Router DOM 6.26.1 用于路由管理
+- TailwindCSS 3.4.10 用于样式管理
+- Lucide React 0.428.0 用于图标组件
+项目特点：
+- 使用现代化的React开发环境
+- 采用TailwindCSS进行响应式设计
+- 包含完整的测试框架（Jest和React Testing Library）
+- 使用React Router进行页面路由管理
+
+   
+安装组件：npm install
+清除缓存：npm run build
+运行前端：npm start
+
+
+

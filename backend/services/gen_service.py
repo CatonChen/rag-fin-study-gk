@@ -8,6 +8,7 @@ from utils.zhipu_factory import ZhipuFactory
 from utils.logging_config import LoggingConfig
 from utils.db_config import DBConfig
 from utils.error_handler import ModelError, ValidationError
+import re
 
 # 初始化配置
 logging_config = LoggingConfig()
@@ -394,14 +395,20 @@ class FinancialGenService:
             logger.info(f"开始生成术语: {text[:100]}...")
             if not text.strip():
                 raise ValidationError("输入文本不能为空")
-                
+            # 校验 zhipu_options
+            ALLOWED_ZHIPU_OPTIONS = {"temperature", "top_p", "max_tokens", "model_name"}
+            if zhipu_options:
+                if not isinstance(zhipu_options, dict):
+                    raise ValidationError("zhipu_options 必须是字典类型")
+                for key in zhipu_options:
+                    if key not in ALLOWED_ZHIPU_OPTIONS:
+                        raise ValidationError(f"zhipu_options 包含非法参数: {key}")
             if method == "simple_generation":
                 result = await self._simple_generation(text)
             elif method == "context_aware_generation":
                 result = await self._context_aware_generation(text, context)
             else:
                 raise ValidationError(f"不支持的生成方法: {method}")
-                
             logger.info("术语生成完成")
             return result
         except Exception as e:
@@ -415,80 +422,86 @@ class FinancialGenService:
         
         Args:
             text: 输入文本
-            
         Returns:
             Dict[str, Any]: 生成结果
-            
         Raises:
             ModelError: 当生成处理失败时
         """
-        prompt = f"""请根据以下文本生成相关的金融术语。
-        请以JSON格式返回结果，包含生成的术语、类型和置信度。
-        
-        文本：{text}
-        """
-        
+        prompt = f"""请根据以下文本生成相关的金融术语。\n请以JSON格式返回结果，包含生成的术语、类型和置信度。\n\n文本：{text}\n"""
         try:
             logger.debug("调用模型进行简单生成")
-            response = await self.client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.llm_config.model_name,
                 messages=[
                     {"role": "system", "content": "你是一个金融术语生成专家。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
+            content = response.choices[0].message.content
+            # 预处理响应文本，移除可能的markdown代码块标记
+            content = re.sub(r"```[a-zA-Z]*", "", content).replace("```", "").strip()
+            # 提取第一个 JSON 对象或数组
+            match = re.search(r'(\{.*\}|\[.*\])', content, re.DOTALL)
+            if not match:
+                raise ModelError("无法提取有效的 JSON 内容")
+            content = match.group(1)
             import json
-            result = json.loads(response.choices[0].message.content)
+            result = json.loads(content)
+            terms = result.get("terms", []) if isinstance(result, dict) else result
+            generated_text = ", ".join([term.get("term", "") for term in terms])
             return {
-                "generated_terms": result.get("terms", []),
+                "generated_terms": terms,
+                "generated_text": generated_text,
                 "method": "simple_generation"
             }
+        except json.JSONDecodeError as e:
+            logger.error(f"模型返回内容无法解析为JSON: {str(e)}; 原始内容: {content}")
+            raise ModelError(f"模型返回内容无法解析为JSON: {str(e)}")
         except Exception as e:
             logger.error(f"模型调用失败: {str(e)}")
             raise ModelError(f"简单生成处理失败: {str(e)}")
     
-    async def _context_aware_generation(
-        self,
-        text: str,
-        context: str
-    ) -> Dict[str, Any]:
+    async def _context_aware_generation(self, text: str, context: str) -> Dict[str, Any]:
         """上下文感知生成
-        
         Args:
             text: 输入文本
             context: 上下文信息
-            
         Returns:
             Dict[str, Any]: 生成结果
-            
         Raises:
             ModelError: 当生成处理失败时
         """
-        prompt = f"""请根据上下文和以下文本生成相关的金融术语。
-        请以JSON格式返回结果，包含生成的术语、类型、置信度和上下文相关性。
-        
-        文本：{text}
-        上下文：{context}
-        """
-        
+        prompt = f"""请根据上下文和以下文本生成相关的金融术语。\n请以JSON格式返回结果，包含生成的术语、类型、置信度和上下文相关性。\n\n文本：{text}\n上下文：{context}\n"""
         try:
             logger.debug("调用模型进行上下文感知生成")
-            response = await self.client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.llm_config.model_name,
                 messages=[
                     {"role": "system", "content": "你是一个金融术语生成专家。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
+            content = response.choices[0].message.content
+            # 预处理响应文本，移除可能的markdown代码块标记
+            content = re.sub(r"```[a-zA-Z]*", "", content).replace("```", "").strip()
+            # 提取第一个 JSON 对象或数组
+            match = re.search(r'(\{.*\}|\[.*\])', content, re.DOTALL)
+            if not match:
+                raise ModelError("无法提取有效的 JSON 内容")
+            content = match.group(1)
             import json
-            result = json.loads(response.choices[0].message.content)
+            result = json.loads(content)
+            terms = result.get("terms", []) if isinstance(result, dict) else result
+            generated_text = ", ".join([term.get("term", "") for term in terms])
             return {
-                "generated_terms": result.get("terms", []),
+                "generated_terms": terms,
+                "generated_text": generated_text,
                 "method": "context_aware_generation",
-                "context_relevance": result.get("context_relevance", {})
+                "context_relevance": result.get("context_relevance", {}) if isinstance(result, dict) else {}
             }
+        except json.JSONDecodeError as e:
+            logger.error(f"模型返回内容无法解析为JSON: {str(e)}; 原始内容: {content}")
+            raise ModelError(f"模型返回内容无法解析为JSON: {str(e)}")
         except Exception as e:
             logger.error(f"模型调用失败: {str(e)}")
             raise ModelError(f"上下文感知生成处理失败: {str(e)}")
@@ -523,7 +536,7 @@ class FinancialGenService:
             上下文：{context}
             """
             
-            response = await self.client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.llm_config.model_name,
                 messages=[
                     {"role": "system", "content": "你是一个金融术语验证专家。"},
@@ -539,4 +552,65 @@ class FinancialGenService:
             logger.error(f"生成术语验证失败: {str(e)}")
             if isinstance(e, ValidationError):
                 raise e
-            raise ModelError(f"生成术语验证失败: {str(e)}") 
+            raise ModelError(f"生成术语验证失败: {str(e)}")
+
+    async def generate_with_template(self, template: str, variables: Dict[str, Any], options: Dict[str, Any], zhipu_options: Dict[str, Any]) -> Dict[str, Any]:
+        """使用模板生成"""
+        try:
+            # 替换模板中的变量
+            try:
+                text = template.format(**variables)
+            except KeyError as e:
+                logger.error(f"模板变量缺失: {str(e)}")
+                raise ValidationError(f"模板变量缺失: {str(e)}")
+            return await self.generate(text=text, context="", method="simple_generation", zhipu_options=zhipu_options)
+        except ValidationError as e:
+            raise e
+        except Exception as e:
+            logger.error(f"模板生成失败: {str(e)}")
+            raise ModelError(f"模板生成失败: {str(e)}")
+
+    async def generate_with_context(self, prompt: str, context: str, options: Dict[str, Any], zhipu_options: Dict[str, Any]) -> Dict[str, Any]:
+        """带上下文的生成
+        
+        Args:
+            prompt: 提示词
+            context: 上下文
+            options: 选项
+            zhipu_options: 智谱AI配置选项
+            
+        Returns:
+            Dict[str, Any]: 生成结果
+            
+        Raises:
+            ValidationError: 当输入参数无效时
+            ModelError: 当模型处理失败时
+        """
+        try:
+            return await self.generate(text=prompt, context=context, method="context_aware_generation", zhipu_options=zhipu_options)
+        except Exception as e:
+            logger.error(f"上下文生成失败: {str(e)}")
+            raise ModelError(f"上下文生成失败: {str(e)}")
+
+    async def generate_with_constraints(self, prompt: str, constraints: Dict[str, Any], options: Dict[str, Any], zhipu_options: Dict[str, Any]) -> Dict[str, Any]:
+        """带约束的生成
+        
+        Args:
+            prompt: 提示词
+            constraints: 约束
+            options: 选项
+            zhipu_options: 智谱AI配置选项
+            
+        Returns:
+            Dict[str, Any]: 生成结果
+            
+        Raises:
+            ValidationError: 当输入参数无效时
+            ModelError: 当模型处理失败时
+        """
+        try:
+            # 这里可以根据约束调整生成逻辑
+            return await self.generate(text=prompt, context="", method="simple_generation", zhipu_options=zhipu_options)
+        except Exception as e:
+            logger.error(f"约束生成失败: {str(e)}")
+            raise ModelError(f"约束生成失败: {str(e)}") 

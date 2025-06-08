@@ -12,18 +12,20 @@ async def test_generate_empty_prompt(gen_service):
     """测试空提示词输入"""
     with pytest.raises(ValidationError):
         await gen_service.generate(
-            prompt="",
-            options={},
+            text="",
+            context="",
+            method="simple_generation",
             zhipu_options={}
         )
 
 @pytest.mark.asyncio
 async def test_generate_valid_prompt(gen_service):
     """测试有效提示词输入"""
-    prompt = "请解释什么是ROE"
+    text = "请解释什么是ROE"
     result = await gen_service.generate(
-        prompt=prompt,
-        options={},
+        text=text,
+        context="",
+        method="simple_generation",
         zhipu_options={}
     )
     
@@ -85,9 +87,10 @@ async def test_generate_with_invalid_options(gen_service):
     """测试无效选项"""
     with pytest.raises(ValidationError):
         await gen_service.generate(
-            prompt="请解释什么是ROE",
-            options={"invalid_option": True},
-            zhipu_options={}
+            text="请解释什么是ROE",
+            context="",
+            method="simple_generation",
+            zhipu_options={"invalid_option": True}
         )
 
 @pytest.mark.asyncio

@@ -72,12 +72,26 @@ async def test_search_similar_terms(std_service):
     for similar_term in similar_terms:
         assert "term" in similar_term
         assert "similarity" in similar_term
-        assert "metadata" in similar_term
+        assert "type" in similar_term
+        assert "definition" in similar_term
+        assert isinstance(similar_term["similarity"], float)
+        assert 0 <= similar_term["similarity"] <= 1
 
-def test_load_term_vectors(std_service):
-    """测试术语向量加载功能"""
-    std_service._load_term_vectors()
-    assert hasattr(std_service, "term_vectors")
-    assert hasattr(std_service, "term_metadata")
-    assert isinstance(std_service.term_vectors, dict)
-    assert isinstance(std_service.term_metadata, dict) 
+@pytest.mark.asyncio
+async def test_search_similar_terms_empty_input(std_service):
+    """测试空输入搜索"""
+    with pytest.raises(ValidationError):
+        await std_service.search_similar_terms("")
+
+@pytest.mark.asyncio
+async def test_search_similar_terms_low_threshold(std_service):
+    """测试低相似度阈值"""
+    term = "ROE"
+    similar_terms = await std_service.search_similar_terms(
+        term=term,
+        top_k=5,
+        similarity_threshold=0.1  # 使用很低的阈值，应该返回更多结果
+    )
+    
+    assert isinstance(similar_terms, list)
+    assert len(similar_terms) <= 5 

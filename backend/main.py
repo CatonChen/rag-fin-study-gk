@@ -366,13 +366,16 @@ async def generate_financial_content(input: GenInput):
     """
     try:
         logger.info("开始处理内容生成请求")
+        # 将输入参数转换为 gen_service.generate 所需的格式
+        text = input.company_info.dict()
+        context = input.financial_metrics
+        method = input.method
+        zhipu_options = input.llmOptions
         result = await gen_service.generate(
-            input.company_info.dict(),
-            input.financial_metrics,
-            input.analysis_type,
-            input.investment_strategy,
-            input.method,
-            input.llmOptions
+            text=text,
+            context=context,
+            method=method,
+            zhipu_options=zhipu_options
         )
         logger.info("内容生成请求处理完成")
         return standard_response(result)

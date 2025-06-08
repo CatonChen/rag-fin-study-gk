@@ -11,6 +11,7 @@ from utils.db_config import DBConfig
 from utils.db_manager import DatabaseManager
 from utils.logging_config import LoggingConfig
 from utils.error_handler import ModelError, ValidationError
+from tools.zhipu_embedding import ZhipuAIEmbedding
 
 # 初始化配置
 db_config = DBConfig()
@@ -60,40 +61,17 @@ class FinancialStdService:
         )
         self.client = ZhipuFactory.create_llm(self.llm_config)
         
+        # 初始化 embedding 模型
+        self.embed_model = ZhipuAIEmbedding(timeout=60)
+        
         # 初始化数据库管理器
         self.db_manager = DatabaseManager(db_config.db_path)
         
         # 加载FAISS索引
         self.index = faiss.read_index(db_config.index_path)
-        
-        # 加载术语向量和元数据
-        self._load_term_vectors()
+        logger.info(f"当前FAISS索引的向量维度为：{self.index.d}")
         
         logger.info(f"初始化标准化服务完成，使用模型：{model_name}")
-
-    def _load_term_vectors(self):
-        """加载术语向量和元数据
-        
-        Raises:
-            ModelError: 当加载失败时
-        """
-        try:
-            logger.debug("开始加载术语向量和元数据")
-            with self.db_manager.get_connection() as conn:
-                cursor = conn.cursor()
-                
-                # 加载术语向量（embedding_id 仅作示例，实际向量需结合faiss索引）
-                cursor.execute("SELECT term_name, embedding_id FROM financial_terms")
-                self.term_vectors = {row[0]: row[1] for row in cursor.fetchall()}
-                
-                # 加载术语元数据
-                cursor.execute("SELECT term_name, category FROM financial_terms")
-                self.term_metadata = {row[0]: {"type": row[1], "definition": ""} for row in cursor.fetchall()}
-                
-            logger.info(f"术语向量和元数据加载完成，共 {len(self.term_vectors)} 个术语")
-        except Exception as e:
-            logger.error(f"加载术语向量和元数据失败: {str(e)}")
-            raise ModelError(f"加载术语向量和元数据失败: {str(e)}")
 
     async def standardize(
         self,
@@ -154,17 +132,44 @@ class FinancialStdService:
         
         try:
             logger.debug("调用模型进行术语标准化")
-            response = await self.client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.llm_config.model_name,
                 messages=[
                     {"role": "system", "content": "你是一个金融术语标准化专家。"},
                     {"role": "user", "content": prompt}
                 ]
             )
-            
             import json
-            result = json.loads(response.choices[0].message.content)
-            return result.get("terms", [])
+            content = response.choices[0].message.content.strip()
+            # 兼容Markdown代码块标记
+            import re
+            content = re.sub(r"^```[a-zA-Z]*\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
+            content = content.strip()
+            result = json.loads(content)
+            if isinstance(result, dict):
+                # 将中文字段名映射为英文字段名
+                mapped_result = {
+                    "original": result.get("原始术语", ""),
+                    "standardized": result.get("标准化术语", ""),
+                    "type": result.get("术语类型", ""),
+                    "confidence": result.get("置信度", 0)
+                }
+                return [mapped_result]
+            elif isinstance(result, list):
+                # 对列表中的每个字典进行字段名映射
+                mapped_list = []
+                for item in result:
+                    mapped_item = {
+                        "original": item.get("原始术语", ""),
+                        "standardized": item.get("标准化术语", ""),
+                        "type": item.get("术语类型", ""),
+                        "confidence": item.get("置信度", 0)
+                    }
+                    mapped_list.append(mapped_item)
+                return mapped_list
+            else:
+                return []
         except Exception as e:
             logger.error(f"模型调用失败: {str(e)}")
             raise ModelError(f"术语标准化处理失败: {str(e)}")
@@ -225,48 +230,58 @@ class FinancialStdService:
             logger.info(f"开始搜索相似术语: {term}")
             if not term.strip():
                 raise ValidationError("输入术语不能为空")
-                
-            # 获取输入术语的向量表示
-            prompt = f"""请将以下金融术语转换为向量表示。\n请以JSON格式返回结果，包含向量表示。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n\n术语：{term}\n"""
             
-            response = await self.client.chat.completions.create(
-                model=self.llm_config.model_name,
-                messages=[
-                    {"role": "system", "content": "你是一个金融术语向量化专家。"},
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            # 使用 embedding 模型获取向量表示
+            try:
+                query_vector = self.embed_model._get_text_embedding(term)
+                query_vector = np.array(query_vector, dtype=np.float32)
+                logger.info(f"成功获取术语向量表示，维度：{len(query_vector)}")
+            except Exception as e:
+                logger.error(f"获取术语向量表示失败: {str(e)}")
+                raise ModelError(f"获取术语向量表示失败: {str(e)}")
             
-            import json
-            result = json.loads(response.choices[0].message.content)
-            query_vector = np.array(result.get("vector", []), dtype=np.float32)
+            # 确保向量维度正确
+            if len(query_vector) != self.index.d:
+                logger.warning(f"向量维度不匹配：期望 {self.index.d}，实际 {len(query_vector)}")
+                if len(query_vector) < self.index.d:
+                    # 如果维度不足，用0填充
+                    query_vector = np.pad(query_vector, (0, self.index.d - len(query_vector)))
+                else:
+                    # 如果维度过多，截断
+                    query_vector = query_vector[:self.index.d]
             
-            if len(query_vector) == 0:
-                raise ModelError("无法获取术语的向量表示")
-                
             # 使用FAISS进行相似度搜索
             query_vector = query_vector.reshape(1, -1)
             distances, indices = self.index.search(query_vector, top_k)
             
-            # 构建结果
+            # 构建结果，使用数据库查询获取匹配的术语
             similar_terms = []
-            for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
-                if idx == -1:  # FAISS返回-1表示没有找到匹配
-                    continue
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
+                    if idx == -1:  # FAISS返回-1表示没有找到匹配
+                        continue
                     
-                similarity = 1 - distance  # 将距离转换为相似度
-                if similarity < similarity_threshold:
-                    continue
+                    similarity = 1 - distance  # 将距离转换为相似度
+                    if similarity < similarity_threshold:
+                        continue
                     
-                term = list(self.term_vectors.keys())[idx]
-                metadata = self.term_metadata.get(term, {})
-                
-                similar_terms.append({
-                    "term": term,
-                    "similarity": float(similarity),
-                    "type": metadata.get("type", ""),
-                    "definition": metadata.get("definition", "")
-                })
+                    # 使用索引位置查询数据库
+                    cursor.execute("""
+                        SELECT term_name, category 
+                        FROM financial_terms 
+                        WHERE id = ?
+                    """, (idx + 1,))  # FAISS索引从0开始，数据库ID从1开始
+                    
+                    result = cursor.fetchone()
+                    if result:
+                        term_name, category = result
+                        similar_terms.append({
+                            "term": term_name,
+                            "similarity": float(similarity),
+                            "type": category,
+                            "definition": ""
+                        })
             
             logger.info(f"相似术语搜索完成，找到 {len(similar_terms)} 个结果")
             return similar_terms

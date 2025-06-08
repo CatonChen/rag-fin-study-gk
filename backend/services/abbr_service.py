@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Any
 import logging
+import json
 from dotenv import load_dotenv
 from services.std_service import FinancialStdService
 from utils.zhipu_config import ZhipuLLMConfig, ZhipuModelType
@@ -205,7 +206,7 @@ class FinancialAbbrService:
             logger.error(f"缩写展开失败: {str(e)}")
             raise ValueError(f"缩写展开失败: {str(e)}")
     
-    def get_abbr_definition(self, abbr: str) -> Optional[Dict[str, Any]]:
+    async def get_abbr_definition(self, abbr: str) -> Optional[Dict[str, Any]]:
         """获取缩写的标准定义
         
         Args:
@@ -213,23 +214,21 @@ class FinancialAbbrService:
             
         Returns:
             Optional[Dict[str, Any]]: 标准定义，如果未找到则返回None，包含：
-                - term_id: 术语ID
-                - term_name: 术语名称
-                - category: 术语类别
-                - similarity: 相似度分数
+                - abbr: 缩写
+                - expansion: 扩展形式
+                - definition: 定义
                 
         Raises:
             ValueError: 当查询失败时
         """
         try:
             # 使用标准化服务搜索
-            similar_terms = self.std_service.search_similar_terms(abbr)
+            similar_terms = await self.std_service.search_similar_terms(abbr)
             if similar_terms:
                 return {
-                    "term_id": similar_terms[0]["term_id"],
-                    "term_name": similar_terms[0]["term_name"],
-                    "category": similar_terms[0]["category"],
-                    "similarity": similar_terms[0]["similarity"]
+                    "abbr": abbr,
+                    "expansion": similar_terms[0]["term_name"],
+                    "definition": similar_terms[0].get("definition", "")
                 }
             return None
             
@@ -246,164 +245,202 @@ class FinancialAbbrService:
         except Exception as e:
             logger.error(f"清理资源失败: {str(e)}")
 
-    async def expand(
+    def expand(
         self,
         text: str,
-        context: str,
-        method: str,
-        zhipu_options: Dict[str, Any]
+        options: Dict[str, Any] = None,
+        zhipu_options: Dict[str, Any] = None
     ) -> Dict[str, Any]:
-        """扩展金融缩写
+        """展开金融术语缩写
         
         Args:
-            text: 输入文本
-            context: 上下文信息
-            method: 处理方法
-            zhipu_options: 智谱AI配置选项
+            text: 需要展开的文本
+            options: 展开选项
+            zhipu_options: 智谱AI选项
             
         Returns:
-            Dict[str, Any]: 扩展结果
-            
+            Dict[str, Any]: 展开结果，包含：
+                - abbr: 缩写
+                - expansion: 扩展形式
+                - definition: 定义
+                - context: 上下文（如果有）
+                
         Raises:
-            ValidationError: 当输入参数无效时
-            ModelError: 当模型处理失败时
+            ValueError: 当展开失败时
         """
         try:
-            logger.info(f"开始扩展缩写: {text[:100]}...")
-            if not text.strip():
-                raise ValidationError("输入文本不能为空")
-                
-            if method == "simple_expansion":
-                result = await self._simple_expansion(text)
-            elif method == "context_aware_expansion":
-                result = await self._context_aware_expansion(text, context)
+            # 设置默认选项
+            options = options or {}
+            zhipu_options = zhipu_options or {}
+            
+            # 检查方法是否有效
+            if options.get("method") and options["method"] not in ["simple_expansion", "context_aware_expansion"]:
+                raise ValueError(f"不支持的处理方法: {options['method']}")
+            
+            # 根据选项选择展开方法
+            if options.get("use_context", False):
+                context = options.get("context", "")
+                result = self._context_aware_expansion(text, context)
             else:
-                raise ValidationError(f"不支持的处理方法: {method}")
-                
-            logger.info("缩写扩展完成")
+                result = self._simple_expansion(text)
+            
             return result
+            
         except Exception as e:
-            logger.error(f"缩写扩展失败: {str(e)}")
-            if isinstance(e, (ValidationError, ModelError)):
-                raise e
-            raise ModelError(f"缩写扩展失败: {str(e)}")
+            logger.error(f"缩写展开失败: {str(e)}")
+            raise ValueError(f"缩写展开失败: {str(e)}")
     
-    async def _simple_expansion(self, text: str) -> Dict[str, Any]:
-        """简单扩展
+    def _simple_expansion(self, text: str) -> Dict[str, Any]:
+        """使用简单的LLM方法扩展缩写
         
         Args:
-            text: 输入文本
+            text: 需要扩展的文本
             
         Returns:
-            Dict[str, Any]: 扩展结果
-            
+            Dict[str, Any]: 扩展结果，包含：
+                - abbr: 缩写
+                - expansion: 扩展形式
+                - definition: 定义
+                
         Raises:
-            ModelError: 当扩展处理失败时
+            ValueError: 当处理失败时
         """
-        prompt = f"""请对以下文本中的金融缩写进行扩展。
-        请以JSON格式返回结果，包含原始缩写、扩展形式和类型。
-        
-        文本：{text}
-        """
-        
         try:
-            logger.debug("调用模型进行简单扩展")
-            response = await self.client.chat.completions.create(
+            messages = [
+                {"role": "system", "content": "你是一个金融术语专家，负责将金融文本中的缩写替换为完整形式。请返回标准JSON格式，不要包含任何markdown代码块标记。"},
+                {"role": "user", "content": text}
+            ]
+            
+            response = self.client.chat.completions.create(
                 model=self.llm_config.model_name,
-                messages=[
-                    {"role": "system", "content": "你是一个金融缩写扩展专家。"},
-                    {"role": "user", "content": prompt}
-                ]
+                messages=messages
             )
             
-            import json
-            result = json.loads(response.choices[0].message.content)
+            # 预处理响应文本，移除可能的markdown代码块标记
+            content = response.choices[0].message.content
+            content = content.replace("```json", "").replace("```", "").strip()
+            
+            # 解析JSON响应
+            result = json.loads(content)
+            
             return {
-                "expanded_terms": result.get("terms", []),
-                "method": "simple_expansion"
+                "abbr": result.get("abbr", ""),
+                "expansion": result.get("expansion", ""),
+                "definition": result.get("definition", "")
             }
+            
         except Exception as e:
-            logger.error(f"模型调用失败: {str(e)}")
-            raise ModelError(f"简单扩展处理失败: {str(e)}")
+            logger.error(f"简单扩展失败: {str(e)}")
+            raise ValueError(f"简单扩展失败: {str(e)}")
     
-    async def _context_aware_expansion(
+    def _context_aware_expansion(
         self,
         text: str,
-        context: str
+        context: str = ""
     ) -> Dict[str, Any]:
-        """上下文感知扩展
+        """使用上下文感知的LLM方法扩展缩写
         
         Args:
-            text: 输入文本
-            context: 上下文信息
+            text: 需要扩展的文本
+            context: 上下文文本
             
         Returns:
-            Dict[str, Any]: 扩展结果
-            
-        Raises:
-            ModelError: 当扩展处理失败时
-        """
-        prompt = f"""请根据上下文对以下金融缩写进行语义展开。\n请以JSON格式返回结果，包含缩写、全称、定义、上下文。\n请只返回标准JSON字符串，不要添加任何代码块标记（如```json或```）。\n\n文本：{text}\n"""
-        
-        try:
-            logger.debug("调用模型进行上下文感知扩展")
-            response = await self.client.chat.completions.create(
-                model=self.llm_config.model_name,
-                messages=[
-                    {"role": "system", "content": "你是一个金融缩写扩展专家。"},
-                    {"role": "user", "content": prompt}
-                ]
-            )
-            
-            import json
-            result = json.loads(response.choices[0].message.content)
-            return {
-                "expanded_terms": result.get("terms", []),
-                "method": "context_aware_expansion",
-                "context_relevance": result.get("context_relevance", {})
-            }
-        except Exception as e:
-            logger.error(f"模型调用失败: {str(e)}")
-            raise ModelError(f"上下文感知扩展处理失败: {str(e)}")
-    
-    async def validate_abbreviation(self, abbr: str) -> Dict[str, Any]:
-        """验证缩写
-        
-        Args:
-            abbr: 输入缩写
-            
-        Returns:
-            Dict[str, Any]: 验证结果
-            
-        Raises:
-            ValidationError: 当输入缩写无效时
-            ModelError: 当验证失败时
-        """
-        try:
-            logger.info(f"开始验证缩写: {abbr}")
-            if not abbr.strip():
-                raise ValidationError("输入缩写不能为空")
+            Dict[str, Any]: 扩展结果，包含：
+                - abbr: 缩写
+                - expansion: 扩展形式
+                - definition: 定义
+                - context: 上下文
                 
-            prompt = f"""请验证以下金融缩写的有效性。
-            请以JSON格式返回结果，包含有效性、可能含义和置信度。
+        Raises:
+            ValueError: 当处理失败时
+        """
+        try:
+            messages = [
+                {"role": "system", "content": "你是一个金融术语专家，负责将金融文本中的缩写替换为完整形式。请返回标准JSON格式，不要包含任何markdown代码块标记。"},
+                {"role": "user", "content": f"文本：{text}\n上下文：{context}"}
+            ]
             
-            缩写：{abbr}
-            """
-            
-            response = await self.client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.llm_config.model_name,
-                messages=[
-                    {"role": "system", "content": "你是一个金融缩写验证专家。"},
-                    {"role": "user", "content": prompt}
-                ]
+                messages=messages
             )
             
-            import json
-            result = json.loads(response.choices[0].message.content)
-            logger.info(f"缩写验证完成: {result.get('valid', False)}")
-            return result
+            # 预处理响应文本，移除可能的markdown代码块标记
+            content = response.choices[0].message.content
+            content = content.replace("```json", "").replace("```", "").strip()
+            
+            # 解析JSON响应
+            result = json.loads(content)
+            
+            return {
+                "abbr": result.get("abbr", ""),
+                "expansion": result.get("expansion", ""),
+                "definition": result.get("definition", ""),
+                "context": context
+            }
+            
+        except Exception as e:
+            logger.error(f"上下文感知扩展失败: {str(e)}")
+            raise ValueError(f"上下文感知扩展失败: {str(e)}")
+    
+    def validate_abbreviation(self, abbr: str) -> Dict[str, Any]:
+        """验证金融术语缩写
+        
+        Args:
+            abbr: 需要验证的缩写
+            
+        Returns:
+            Dict[str, Any]: 验证结果，包含：
+                - is_valid: 是否有效
+                - reason: 原因
+                
+        Raises:
+            ValueError: 当验证失败时
+        """
+        try:
+            is_valid = self._validate_abbr(abbr)
+            
+            return {
+                "is_valid": is_valid,
+                "reason": "有效的金融术语缩写" if is_valid else "无效的金融术语缩写"
+            }
+            
         except Exception as e:
             logger.error(f"缩写验证失败: {str(e)}")
-            if isinstance(e, ValidationError):
-                raise e
-            raise ModelError(f"缩写验证失败: {str(e)}") 
+            raise ValueError(f"缩写验证失败: {str(e)}")
+
+    def _validate_abbr(self, abbr: str) -> bool:
+        """验证缩写是否有效
+        
+        Args:
+            abbr: 需要验证的缩写
+            
+        Returns:
+            bool: 缩写是否有效
+            
+        Raises:
+            ValueError: 当验证失败时
+        """
+        try:
+            messages = [
+                {"role": "system", "content": "你是一个金融术语专家，负责验证金融缩写是否有效。请返回标准JSON格式，不要包含任何markdown代码块标记。"},
+                {"role": "user", "content": f"缩写：{abbr}"}
+            ]
+            
+            response = self.client.chat.completions.create(
+                model=self.llm_config.model_name,
+                messages=messages
+            )
+            
+            # 预处理响应文本，移除可能的markdown代码块标记
+            content = response.choices[0].message.content
+            content = content.replace("```json", "").replace("```", "").strip()
+            
+            # 解析JSON响应
+            result = json.loads(content)
+            
+            return result.get("is_valid", False)
+            
+        except Exception as e:
+            logger.error(f"缩写验证失败: {str(e)}")
+            raise ValueError(f"缩写验证失败: {str(e)}") 
